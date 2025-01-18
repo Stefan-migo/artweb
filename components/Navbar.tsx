@@ -17,6 +17,12 @@ const Navbar = () => {
           <Link href="/sales" className="text-white hover:text-gray-300">
             Sales
           </Link>
+          <Link href="/" className="text-xl font-bold">
+            My p5.js Projects
+          </Link>
+          <Link href="/dashboard" className="px-4 py-2 bg-blue-500 rounded">
+            Dashboard
+          </Link>
         </div>
       </div>
     </nav>

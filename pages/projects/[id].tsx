@@ -1,154 +1,311 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import dynamic from 'next/dynamic';
-import { supabase } from '../../lib/supabaseClient';
+import { supabase } from '@/lib/supabaseClient';
+import P5Wrapper from '@/components/P5Wrapper';
+import P5Editor from '@/components/P5Editor';
 
-const Sketch = dynamic(() => import('react-p5'), { ssr: false });
-
-const ProjectPage = ({ project }) => {
+const ProjectPage = () => {
   const router = useRouter();
+  const { id } = router.query;
+
   const [activeTab, setActiveTab] = useState('visual');
+  const [project, setProject] = useState(null);
+  const [files, setFiles] = useState([]);
+  const [activeFile, setActiveFile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [isSidebarVisible, setIsSidebarVisible] = useState(true); // Toggle sidebar visibility
 
-  if (router.isFallback) {
-    return <div className="text-center mt-10">Loading...</div>;
-  }
+  // Fetch project and files
+  useEffect(() => {
+    if (!router.isReady || !id) return;
 
-  if (!project) {
-    return <div className="text-center mt-10">Project not found.</div>;
-  }
+    const fetchProject = async () => {
+      try {
+        // Fetch project
+        const { data: projectData, error: projectError } = await supabase
+          .from('projects')
+          .select('*')
+          .eq('id', id)
+          .single();
 
-  // Convert the sketch code strings into functions
-  const sketchFunctions = project.sketch
-    ? {
-        setup: new Function('p5', project.sketch.setup),
-        draw: new Function('p5', project.sketch.draw),
+        if (projectError) throw projectError;
+
+        // Fetch files
+        const { data: filesData, error: filesError } = await supabase
+          .from('project_files')
+          .select('*')
+          .eq('project_id', id);
+
+        if (filesError) throw filesError;
+
+        setProject(projectData);
+        setFiles(filesData);
+        setActiveFile(filesData.find((file) => file.file_name === 'sketch.js') || filesData[0]);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
       }
-    : null;
+    };
+
+    fetchProject();
+  }, [id, router.isReady]);
+
+  // Handle file creation
+  const handleCreateFile = async () => {
+    const fileName = prompt('Enter a name for the new file:');
+    if (!fileName) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('project_files')
+        .insert([
+          {
+            project_id: id,
+            file_name: fileName,
+            file_type: 'text/plain', // Default type for new files
+            file_content: '',
+          },
+        ]);
+
+      if (error) throw error;
+
+      setFiles([...files, data[0]]);
+      setActiveFile(data[0]);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Handle file upload
+  const handleUploadFile = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    try {
+      // Upload binary files to Supabase Storage
+      if (file.type.startsWith('image/') || file.type === 'text/csv') {
+        const { data, error } = await supabase.storage
+          .from('project_files')
+          .upload(`${id}/${file.name}`, file);
+
+        if (error) throw error;
+
+        // Save file metadata to project_files table
+        const { data: fileData, error: fileError } = await supabase
+          .from('project_files')
+          .insert([
+            {
+              project_id: id,
+              file_name: file.name,
+              file_type: file.type,
+              file_url: data.Key,
+            },
+          ]);
+
+        if (fileError) throw fileError;
+
+        setFiles([...files, fileData[0]]);
+      } else {
+        // Save text-based files to project_files table
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          const fileContent = e.target.result;
+
+          const { data, error } = await supabase
+            .from('project_files')
+            .insert([
+              {
+                project_id: id,
+                file_name: file.name,
+                file_type: file.type,
+                file_content: fileContent,
+              },
+            ]);
+
+          if (error) throw error;
+
+          setFiles([...files, data[0]]);
+        };
+        reader.readAsText(file);
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Handle file deletion
+  const handleDeleteFile = async (fileId) => {
+    if (!confirm('Are you sure you want to delete this file?')) return;
+
+    try {
+      const { error } = await supabase
+        .from('project_files')
+        .delete()
+        .eq('id', fileId);
+
+      if (error) throw error;
+
+      // Remove the deleted file from the list
+      setFiles(files.filter((file) => file.id !== fileId));
+
+      // If the active file is deleted, reset the active file
+      if (activeFile?.id === fileId) {
+        setActiveFile(null);
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const initSketch = () => {
+    const p5Wrapper = document.getElementById('p5-wrapper');
+    if (p5Wrapper) {
+      p5Wrapper.innerHTML = ''; // Clear the canvas
+    }
+    // Reinitialize the sketch (you may need to pass the updated code here)
+    // For example, if you have a ref or state for the P5Wrapper, trigger a re-render.
+  };
+
+  if (loading) return <div className="text-center mt-10">Loading...</div>;
+  if (error) return <div className="text-center mt-10">Error: {error}</div>;
+  if (!project) return <div className="text-center mt-10">Project not found.</div>;
 
   return (
-    <div className="container mx-auto p-4">
+    <div className="container mx-auto p-4 mt-16">
       <h1 className="text-3xl font-bold text-center mb-8">{project.title}</h1>
 
-      {/* Tab Navigation */}
-      <div className="flex justify-center space-x-4 mb-8">
-        <button
-          onClick={() => setActiveTab('visual')}
-          className={`px-4 py-2 rounded ${
-            activeTab === 'visual'
-              ? 'bg-black text-white'
-              : 'bg-gray-200 text-gray-700'
-          }`}
-        >
-          Visual
-        </button>
-        <button
-          onClick={() => setActiveTab('code')}
-          className={`px-4 py-2 rounded ${
-            activeTab === 'code'
-              ? 'bg-black text-white'
-              : 'bg-gray-200 text-gray-700'
-          }`}
-        >
-          Code
-        </button>
-      </div>
+      <div className="flex">
+        {/* Sidebar for files */}
+        {isSidebarVisible && (
+          <div className="w-1/4 p-4 border-r">
+            <h2 className="text-xl font-bold mb-4">Project Files</h2>
 
-      {/* Tab Content */}
-      {activeTab === 'visual' && (
-        <div className="flex justify-center">
-          {sketchFunctions ? (
-            <div className="w-full max-w-[500px]">
-              <Sketch setup={sketchFunctions.setup} draw={sketchFunctions.draw} />
-            </div>
-          ) : (
-            <div className="text-center text-gray-700">
-              No visual component available for this project.
+            {/* Restart Sketch Button */}
+            {activeFile?.file_name === 'sketch.js' && (
+              <button
+                onClick={() => {
+                  const p5Wrapper = document.getElementById('p5-wrapper');
+                  if (p5Wrapper) {
+                    p5Wrapper.innerHTML = ''; // Clear the canvas
+                  }
+                  initSketch(); // Reinitialize the sketch
+                }}
+                className="w-full mb-4 px-4 py-2 bg-green-500 text-white rounded"
+              >
+                Restart Sketch
+              </button>
+            )}
+
+            {/* Create New File Button */}
+            <button
+              onClick={handleCreateFile}
+              className="w-full mb-4 px-4 py-2 bg-blue-500 text-white rounded"
+            >
+              Create New File
+            </button>
+
+            {/* Upload File Button */}
+            <input
+              type="file"
+              onChange={handleUploadFile}
+              className="w-full mb-4"
+            />
+
+            {/* Files List */}
+            <ul>
+              {files.map((file) => (
+                <li
+                  key={file.id}
+                  onClick={() => setActiveFile(file)}
+                  className={`p-2 cursor-pointer ${activeFile?.id === file.id ? 'bg-gray-200' : ''
+                    }`}
+                >
+                  <div className="flex justify-between items-center">
+                    <span>{file.file_name}</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation(); // Prevent file selection
+                        handleDeleteFile(file.id);
+                      }}
+                      className="px-2 py-1 bg-red-500 text-white rounded"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Toggle Sidebar Button */}
+        <button
+          onClick={() => setIsSidebarVisible(!isSidebarVisible)}
+          className="fixed left-0 top-1/2 transform -translate-y-1/2 bg-black text-white px-2 py-4 rounded-r-lg z-50"
+        >
+          {isSidebarVisible ? '◄' : '►'}
+        </button>
+
+        {/* Main content */}
+        <div className={`flex-1 p-4 ${isSidebarVisible ? 'ml-1/4' : ''}`}>
+          {/* Tab Navigation */}
+          <div className="flex justify-center space-x-4 mb-8">
+            <button
+              onClick={() => setActiveTab('visual')}
+              className={`px-4 py-2 rounded ${activeTab === 'visual'
+                ? 'bg-black text-white'
+                : 'bg-gray-200 text-gray-700'
+                }`}
+            >
+              Visual
+            </button>
+            <button
+              onClick={() => setActiveTab('code')}
+              className={`px-4 py-2 rounded ${activeTab === 'code'
+                ? 'bg-black text-white'
+                : 'bg-gray-200 text-gray-700'
+                }`}
+            >
+              Code
+            </button>
+          </div>
+
+          {activeTab === 'visual' && (
+            <div>
+              {activeFile?.file_name === 'sketch.js' && (
+                <P5Wrapper code={activeFile.file_content} id="p5-wrapper" />
+              )}
             </div>
           )}
-        </div>
-      )}
 
-      {activeTab === 'code' && (
-        <div>
-          <h2 className="text-2xl font-bold mb-4">Code</h2>
-          <pre className="bg-gray-100 p-4 rounded-lg overflow-auto">
-            <code>{project.code}</code>
-          </pre>
-        </div>
-      )}
+          {/* Code Tab */}
+          {activeTab === 'code' && activeFile && (
+            <P5Editor
+              initialCode={activeFile.file_content}
+              onSaveCode={async (updatedCode) => {
+                const { data, error } = await supabase
+                  .from('project_files')
+                  .update({ file_content: updatedCode })
+                  .eq('id', activeFile.id);
 
-      {/* Project Details */}
-      <div className="mt-8">
-        <h2 className="text-2xl font-bold mb-4">Description</h2>
-        <p className="text-gray-700 mb-6">{project.description}</p>
-        <h2 className="text-2xl font-bold mb-4">Details</h2>
-        <p className="text-gray-700 mb-6">{project.details}</p>
+                if (error) throw error;
+
+                setFiles(
+                  files.map((file) =>
+                    file.id === activeFile.id
+                      ? { ...file, file_content: updatedCode }
+                      : file
+                  )
+                );
+              }}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
 };
-
-export async function getStaticProps({ params }) {
-  console.log('Fetching project with ID:', params.id); // Debugging
-  console.log('Type of id:', typeof params.id); // Debugging
-
-  // Convert id to a number
-  const projectId = Number(params.id);
-  console.log('Converted projectId:', projectId); // Debugging
-
-  const { data: project, error } = await supabase
-    .from('projects')
-    .select('*')
-    .eq('id', projectId) // Use the number id
-    .single();
-
-  if (error) {
-    console.error('Error fetching project:', error);
-    return {
-      notFound: true,
-    };
-  }
-
-  if (!project) {
-    console.error('Project not found');
-    return {
-      notFound: true,
-    };
-  }
-
-  console.log('Fetched project:', project); // Debugging
-
-  return {
-    props: {
-      project,
-    },
-    revalidate: 60, // Revalidate the page every 60 seconds
-  };
-}
-
-export async function getStaticPaths() {
-  const { data: projects, error } = await supabase.from('projects').select('id');
-
-  if (error) {
-    console.error('Error fetching project IDs:', error);
-    return {
-      paths: [],
-      fallback: true,
-    };
-  }
-
-  console.log('Fetched project IDs:', projects); // Debugging
-
-  const paths = projects.map((project) => ({
-    params: { id: project.id.toString() }, // Convert id to string for the URL
-  }));
-
-  console.log('Generated paths:', paths); // Debugging
-
-  return {
-    paths,
-    fallback: true,
-  };
-}
 
 export default ProjectPage;

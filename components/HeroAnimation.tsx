@@ -10,7 +10,7 @@ const HeroAnimation = () => {
 
   const preload = (p5) => {
     // Load the colors.csv file before the sketch starts
-    table = p5.loadTable('/colors.csv', 'csv', 'header');
+    table = p5.loadTable('/data/colors.csv', 'csv', 'header');
   };
 
   const setup = (p5, canvasParentRef) => {
